@@ -2,7 +2,7 @@
  * Интерактивная карта пациентов: t-SNE, выбор и редактирование пациента, прогноз времени дожития.
  * Данные и параметры моделей — docs/survival_model.js (scripts/survival_time_predictor.py export).
  *
- * Пациенты — все строки med_dataset_cardio.xlsx (глобальный индекс g); balanced_dataset_all_cause.csv — подмножество
+ * Пациенты — все строки med_dataset_cardio.xlsx (глобальный индекс g); balanced_dataset.csv — подмножество
  * этих строк. Карта и номер строки относятся к выбранному датасету (локальный индекс i = ds.local[g]).
  */
 (function () {
@@ -22,7 +22,7 @@
   const HORIZONS = BUNDLE.meta.horizons;
   const COHORT_RISKS = BUNDLE.meta.cohort_risks;
   const DEFAULT_HORIZON = HORIZONS.length - 1;
-  // Модель по умолчанию: для balanced_dataset_all_cause.csv — многоэтапный конвейер, для всей когорты — CoxPH. Все модели
+  // Модель по умолчанию: для balanced_dataset.csv — многоэтапный конвейер, для всей когорты — CoxPH. Все модели
   // откалиброваны на всю когорту, поэтому метрики в таблице моделей — на отложенных пациентах всей когорты
   const DEFAULT_MODELS = { balanced: 'stg', full: 'cph' };
   // Признаки моделей (остальные в редакторе помечены «не используется»)
@@ -68,7 +68,7 @@
     crea: { step: 1, group: 'labs' },
   };
   const GROUPS = ['demo', 'vitals', 'comorb', 'event', 'treat', 'labs'];
-  // patients.split: 0 — обучающий, цензурирован до τ; 1 — обучающий из balanced_dataset_all_cause.csv; 2 — отложенная выборка
+  // patients.split: 0 — обучающий, цензурирован до τ; 1 — обучающий из balanced_dataset.csv; 2 — отложенная выборка
   const SPLIT_KEYS = ['patient.calib', 'patient.train', 'patient.test'];
 
   const { t } = I18N;
