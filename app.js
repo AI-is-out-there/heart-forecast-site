@@ -2,8 +2,8 @@
  * Интерактивная карта пациентов: t-SNE, выбор и редактирование пациента, прогноз времени дожития.
  * Данные и параметры моделей — docs/survival_model.js (scripts/survival_time_predictor.py export).
  *
- * Пациенты — все строки med_dataset_cardio.xlsx (глобальный индекс g); balanced_dataset.csv — подмножество
- * этих строк. Карта, таблица и номер строки относятся к выбранному датасету (локальный индекс i = ds.local[g]).
+ * Пациенты — все строки med_dataset_cardio.xlsx (глобальный индекс g); balanced_dataset_all_cause.csv — подмножество
+ * этих строк. Карта и номер строки относятся к выбранному датасету (локальный индекс i = ds.local[g]).
  */
 (function () {
   'use strict';
@@ -22,7 +22,7 @@
   const HORIZONS = BUNDLE.meta.horizons;
   const COHORT_RISKS = BUNDLE.meta.cohort_risks;
   const DEFAULT_HORIZON = HORIZONS.length - 1;
-  // Модель по умолчанию: для balanced_dataset.csv — многоэтапный конвейер, для всей когорты — CoxPH. Все модели
+  // Модель по умолчанию: для balanced_dataset_all_cause.csv — многоэтапный конвейер, для всей когорты — CoxPH. Все модели
   // откалиброваны на всю когорту, поэтому метрики в таблице моделей — на отложенных пациентах всей когорты
   const DEFAULT_MODELS = { balanced: 'stg', full: 'cph' };
   // Признаки моделей (остальные в редакторе помечены «не используется»)
@@ -68,16 +68,17 @@
     crea: { step: 1, group: 'labs' },
   };
   const GROUPS = ['demo', 'vitals', 'comorb', 'event', 'treat', 'labs'];
-  // patients.split: 0 — обучающий, цензурирован до τ; 1 — обучающий из balanced_dataset.csv; 2 — отложенная выборка
+  // patients.split: 0 — обучающий, цензурирован до τ; 1 — обучающий из balanced_dataset_all_cause.csv; 2 — отложенная выборка
   const SPLIT_KEYS = ['patient.calib', 'patient.train', 'patient.test'];
 
   const { t } = I18N;
-  // Исход: смерть от ССЗ (target = 1), смерть от других причин (для смерти от ССЗ — цензурирование) или жив
+  // Исход: смерть от любой причины (target = 1) или жив. Ключ 'other' (смерть от других причин, цензурирование) — для
+  // исхода «смерть от ССЗ»: тогда target = 0, а death_any = 1
   const outcomeKey = (g) => (PATIENTS.target[g] ? 'cvd' : PATIENTS.death_any[g] ? 'other' : 'alive');
   const outcome = (g) => t(`outcome.${outcomeKey(g)}`);
 
-  // Фактическое min(T, τ), с которым сравнивается прогноз RMST: точно — у умерших от ССЗ и наблюдавшихся
-  // не меньше τ; если наблюдение закончилось раньше без смерти от ССЗ — известна только нижняя граница
+  // Фактическое min(T, τ), с которым сравнивается прогноз RMST: точно — у умерших и наблюдавшихся
+  // не меньше τ; если наблюдение закончилось раньше без смерти — известна только нижняя граница
   function observed(g) {
     const time = PATIENTS.time[g];
     return PATIENTS.target[g] || time >= TAU ? { value: Math.min(time, TAU), exact: true } : { value: time, exact: false };
@@ -114,8 +115,8 @@
   const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
   const fmtDays = (v) => I18N.int(v);
   const days = (v) => t('days', { n: fmtDays(v) });
-  // Прогноз τ означает «смерти от ССЗ в пределах горизонта τ не будет» — показываем «≥ τ», а не точный день;
-  // так же показываем факт у пациентов, наблюдавшихся дольше τ без смерти от ССЗ (их время — не день смерти)
+  // Прогноз τ означает «смерти в пределах горизонта τ не будет» — показываем «≥ τ», а не точный день;
+  // так же показываем факт у пациентов, наблюдавшихся дольше τ без смерти (их время — не день смерти)
   const fmtTime = (v) => (v >= TAU ? `≥ ${fmtDays(TAU)}` : fmtDays(v));
   const daysTime = (v) => t('days', { n: fmtTime(v) });
   const fmtObserved = (g) => {
@@ -202,7 +203,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Прогноз времени (медиана S(t)) и риск смерти от ССЗ за год для всех пациентов и всех моделей
+  // Прогноз времени (медиана S(t)) и риск смерти за год для всех пациентов и всех моделей
   // ---------------------------------------------------------------------------
   const baseTime = {}, baseRisk = {}; // по исходным значениям датасета
   const curTime = {}, curRisk = {};   // по текущим значениям (с изменениями)
@@ -228,7 +229,7 @@
   }
   for (let g = 0; g < NP; g++) if (isEdited(g)) refreshTime(g);
 
-  // Группы с исходом, который данные при поступлении не объясняют: внезапная смерть от ССЗ и неожиданное выживание
+  // Группы с исходом, который данные при поступлении не объясняют: внезапная смерть и неожиданное выживание
   const markedGroup = (g) => (PATIENTS.sudden[g] ? 'sudden' : PATIENTS.unexpected[g] ? 'unexpected' : null);
 
   // Значения вне правдоподобного диапазона — вероятная ошибка ввода
@@ -422,7 +423,7 @@
     ctx.closePath();
   }
 
-  // Внезапная смерть от ССЗ или неожиданное выживание — ромб цвета фактического исхода (в режиме риска — цвета группы
+  // Внезапная смерть или неожиданное выживание — ромб цвета фактического исхода (в режиме риска — цвета группы
   // риска с изменениями) с обводкой цветом текста
   function drawMarked(x, y, r, g) {
     diamond(x, y, r + 2);
@@ -652,7 +653,7 @@
     const time = PATIENTS.time[g], target = PATIENTS.target[g];
 
     $('prediction-sub').textContent = t('pred.sub', { id: PATIENTS.id[g], model: MODELS[m] });
-    // Дата (медиана S(t)) — только если вероятность смерти от ССЗ до τ выше 50%; иначе — риск до τ
+    // Дата (медиана S(t)) — только если вероятность смерти до τ выше 50%; иначе — риск до τ
     const dated = cur.time < TAU;
     const tau = fmtDays(TAU);
     $('hero-label').textContent = t(dated ? (edited ? 'hero.edited' : 'hero.dataset')
@@ -688,7 +689,7 @@
       // Конвейер: вероятности трёх групп классификатора и (справочно) время внутри наиболее вероятной группы
       ...(cur.stage && cur.stage.kind === 'staged' ? stagedFacts(cur.stage, fact) : []),
     ].filter(Boolean));
-    // Если наблюдение закончилось до τ без смерти от ССЗ, min(T, τ) неизвестно — есть только нижняя граница
+    // Если наблюдение закончилось до τ без смерти, min(T, τ) неизвестно — есть только нижняя граница
     const factKey = observed(g).exact ? 'hero.fact' : PATIENTS.death_any[g] ? 'hero.factOther' : 'hero.factCensored';
     $('hero-sub').textContent = `${t(dated ? 'hero.sub' : 'hero.horizon', { tau })} ${t(factKey, { v: observed(g).exact ? fmtObserved(g) : fmtDays(time) })}`;
 
@@ -735,7 +736,7 @@
     ];
   }
 
-  // Риски смерти от ССЗ к срокам: полоса — пациент, штрих — среднее по когорте; шкала 0–PROFILE_SCALE
+  // Риски смерти к срокам: полоса — пациент, штрих — среднее по когорте; шкала 0–PROFILE_SCALE
   const PROFILE_SCALE = 0.5;
   const scalePct = (p) => `${(100 * Math.min(p / PROFILE_SCALE, 1)).toFixed(1)}%`;
   function renderRiskProfile(g, risks, datasetRisks, baseRisks) {
@@ -822,10 +823,10 @@
   }
 
   // Матрица ошибок групп риска за 12 месяцев для выбранной модели: строка — группа по прогнозу (вне выборки), столбец —
-  // по «реальному» риску (доля умерших от ССЗ среди похожих пациентов); справа и снизу — фактическая смертность
+  // по «реальному» риску (доля умерших среди похожих пациентов); справа и снизу — фактическая смертность
   function renderConfusion() {
     const m = state.model, g = state.selected, conf = BUNDLE.confusion;
-    const cells = conf.models[m].cells;  // [прогноз][«реальная»] = [пациентов, умерли от ССЗ за 12 мес., исход известен]
+    const cells = conf.models[m].cells;  // [прогноз][«реальная»] = [пациентов, умерли за 12 мес., исход известен]
     const K = cells.length, groups = [...Array(K).keys()];
     const add = (a, b) => a.map((v, k) => v + b[k]);
     const sumOf = (list) => list.reduce(add, [0, 0, 0]);
@@ -877,6 +878,65 @@
       real: fmtPct(PATIENTS.real_risk[g]), realGroup: label(patientCol),
     });
     $('confusion-note').textContent = t('confusion.note', { k: conf.neighbours, n: fmtDays(total[0]) });
+
+    // Как считаются проценты — на примере ячейки выбранного пациента и итогов её строки и столбца
+    const cell = cells[patientRow][patientCol], row = rowSum[patientRow], col = colSum[patientCol];
+    const share = (died, known) => (known ? fmtPct(died / known) : '—');
+    const params = {
+      row: label(patientRow), col: label(patientCol), k: conf.neighbours,
+      n: fmtDays(cell[0]), known: fmtDays(cell[2]), died: fmtDays(cell[1]), pct: share(cell[1], cell[2]),
+      rn: fmtDays(row[2]), rd: fmtDays(row[1]), rp: share(row[1], row[2]),
+      cn: fmtDays(col[2]), cd: fmtDays(col[1]), cp: share(col[1], col[2]),
+      fill: fmtPct(rowSum[patientRow][0] ? cell[0] / rowSum[patientRow][0] : 0), rtotal: fmtDays(row[0]),
+      agree: fmtDays(agree[0]), total: fmtDays(total[0]), agreePct: fmtPct(agree[0] / total[0]),
+    };
+    $('confusion-how-title').textContent = t('confusion.howTitle');
+    $('confusion-how').replaceChildren(...['cell', 'row', 'col', 'fill', 'summary'].map((key) =>
+      el('li', { text: t(`confusion.how.${key}`, params) })));
+    renderSummary();
+  }
+
+  // Краткая сводка: матрица ошибок 2 × 2 за 12 месяцев. Строки — прогноз модели, сгруппированный по порогу
+  // RISK_GROUP_EDGES[1] (низкий + умеренный против высокого + очень высокого), столбцы — фактический исход у пациентов
+  // с известным за 12 месяцев исходом; прогнозы вне выборки, те же, что в матрице 4 × 4
+  function renderSummary() {
+    const m = state.model, conf = BUNDLE.confusion;
+    const cells = conf.models[m].cells;
+    const K = cells.length, split = 2;
+    // [умерли, пережили 12 мес.] по прогнозной строке; пациенты с неизвестным исходом не входят
+    const outcomeOf = (i) => cells[i].reduce(([d, s], [, died, known]) => [d + died, s + known - died], [0, 0]);
+    const low = [0, 0], high = [0, 0];
+    for (let i = 0; i < K; i++) {
+      const [d, s] = outcomeOf(i);
+      const into = i < split ? low : high;
+      into[0] += d;
+      into[1] += s;
+    }
+    const tp = high[0], fp = high[1], fn = low[0], tn = low[1];
+    const edge = fmtPct(BUNDLE.meta.risk_group_edges[split - 1]);
+    $('summary-title').textContent = t('summary.title');
+    $('summary-sub').textContent = t('summary.sub', { model: MODELS[m] });
+    $('summary-table').tHead.rows[0].replaceChildren(
+      el('th', { scope: 'col', text: t('summary.corner') }),
+      el('th', { scope: 'col', text: t('summary.died') }),
+      el('th', { scope: 'col', text: t('summary.survived') }),
+      el('th', { scope: 'col', text: t('confusion.total') }));
+    const row = (key, [d, s], hitDied) => el('tr', {},
+      el('td', { text: t(key, { edge }) }),
+      el('td', { class: hitDied ? 'hit' : null }, fmtDays(d), el('small', { text: t(hitDied ? 'summary.tp' : 'summary.fn') })),
+      el('td', { class: hitDied ? null : 'hit' }, fmtDays(s), el('small', { text: t(hitDied ? 'summary.fp' : 'summary.tn') })),
+      el('td', { text: fmtDays(d + s) }));
+    $('summary-table').tBodies[0].replaceChildren(
+      row('summary.high', high, true),
+      row('summary.low', low, false),
+      el('tr', {}, el('td', { text: t('confusion.total') }), el('td', { text: fmtDays(tp + fn) }),
+        el('td', { text: fmtDays(fp + tn) }), el('td', { text: fmtDays(tp + fn + fp + tn) })));
+    const stat = (term, num, den, note) => el('div', {}, el('dt', { text: term }),
+      el('dd', {}, den ? fmtPct(num / den) : '—', el('small', { text: t(note, { num: fmtDays(num), den: fmtDays(den) }) })));
+    $('summary-stats').replaceChildren(
+      stat(t('summary.sens'), tp, tp + fn, 'summary.sensNote'),
+      stat(t('summary.spec'), tn, tn + fp, 'summary.specNote'));
+    $('summary-note').textContent = t('summary.note', { n: fmtDays(tp + fn + fp + tn), edge, folds: BUNDLE.meta.cv_folds });
   }
 
   function renderMiniSummary() {
@@ -1128,86 +1188,12 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Табличное представление выбранного датасета
-  // ---------------------------------------------------------------------------
-  let tableRows = []; // по локальному индексу
-  const sortState = { key: 'row', dir: 1 };
-  const COLUMNS = [
-    ['row', 'table.row', (g) => ds.local[g]],
-    ['id', 'table.id', (g) => PATIENTS.id[g]],
-    ['target', 'table.outcome', (g) => PATIENTS.target[g]],
-    ['time', 'table.time', (g) => PATIENTS.time[g]],
-    ['real', 'table.real', (g) => observed(g).value],
-    ['pred', 'table.pred', (g) => baseTime[state.model][g]],
-    ['risk', 'table.risk', (g) => baseRisk[state.model][g]],
-    ['group', 'table.group', (g) => baseRisk[state.model][g]],
-    ['edited', 'table.edit', (g) => (editedSet.has(g) ? curTime[state.model][g] : -1)],
-  ];
-
-  function buildTableHead() {
-    const head = $('patients-table').tHead.rows[0];
-    for (const [key] of COLUMNS) {
-      const button = el('button', { type: 'button' });
-      button.addEventListener('click', () => {
-        sortState.dir = sortState.key === key ? -sortState.dir : 1;
-        sortState.key = key;
-        sortTable();
-      });
-      head.append(el('th', { scope: 'col' }, button));
-    }
-  }
-
-  function buildTableBody() {
-    tableRows = Array.from(ds.rows, (g) => {
-      const tr = el('tr', { tabindex: 0 });
-      tr.addEventListener('click', () => selectPatient(g));
-      tr.addEventListener('keydown', (e) => { if (e.key === 'Enter') selectPatient(g); });
-      return tr;
-    });
-    for (const g of ds.rows) updateTableRow(g);
-    $('patients-table').tBodies[0].replaceChildren(...tableRows);
-    sortTable();
-  }
-
-  function updateTableRow(g) {
-    const i = ds.local[g];
-    if (i < 0 || !tableRows[i]) return;
-    const m = state.model;
-    tableRows[i].classList.toggle('active', g === state.selected);
-    tableRows[i].replaceChildren(
-      el('td', { text: i }),
-      el('td', { text: PATIENTS.id[g] }),
-      el('td', {}, el('span', { class: 'outcome' }, el('span', { class: `dot t${PATIENTS.target[g]}` }), outcome(g),
-        markedGroup(g) ? el('span', { class: `diamond t${PATIENTS.target[g]}`, title: t(`${markedGroup(g)}.label`) }) : null)),
-      el('td', { text: fmtDays(PATIENTS.time[g]) }),
-      el('td', { text: fmtObserved(g) }),
-      el('td', { text: fmtTime(baseTime[m][g]) }),
-      el('td', { text: fmtPct(baseRisk[m][g]) }),
-      el('td', { text: riskGroupLabel(baseRisk[m][g]) }),
-      el('td', { text: editedSet.has(g) ? fmtTime(curTime[m][g]) : '—' }),
-    );
-  }
-
-  function sortTable() {
-    const value = COLUMNS.find(([key]) => key === sortState.key)[2];
-    const order = Array.from(ds.rows).sort((a, b) => (value(a) - value(b)) * sortState.dir || ds.local[a] - ds.local[b]);
-    $('patients-table').tBodies[0].append(...order.map((g) => tableRows[ds.local[g]]));
-    [...$('patients-table').tHead.rows[0].cells].forEach((th, c) => {
-      const sorted = COLUMNS[c][0] === sortState.key;
-      th.setAttribute('aria-sort', sorted ? (sortState.dir > 0 ? 'ascending' : 'descending') : 'none');
-      th.firstChild.textContent = t(COLUMNS[c][1]) + (sorted ? (sortState.dir > 0 ? ' ▲' : ' ▼') : '');
-    });
-  }
-
-  // ---------------------------------------------------------------------------
   // Действия
   // ---------------------------------------------------------------------------
   function selectPatient(g) {
     const previous = state.selected;
     state.selected = g;
     $('patient-msg').textContent = '';
-    updateTableRow(previous);
-    updateTableRow(g);
     syncEditor();
     renderPatientBar();
     renderPrediction();
@@ -1225,7 +1211,6 @@
     refreshTime(g);
     placeEdited(g);
     animate();
-    updateTableRow(g);
     syncEditor();
     renderPatientBar();
     renderPrediction();
@@ -1256,8 +1241,6 @@
     state.model = m;
     state.models[state.dataset] = m;
     $('model-select').value = m;
-    for (const g of ds.rows) updateTableRow(g);
-    sortTable();
     renderPrediction();
     renderRiskLegend();
     drawMap();
@@ -1286,7 +1269,6 @@
     if (ds.local[state.selected] < 0) state.selected = ds.rows[0];
     state.hovered = -1;
     hideTooltip();
-    buildTableBody();
     renderTexts();
     if (ds.tsne && ds.perplexity === state.perplexity) {
       // Карта этого датасета уже посчитана — показываем её, расставив изменённых пациентов
@@ -1300,29 +1282,6 @@
       startTSNE();
     }
     selectPatient(state.selected);
-  }
-
-  // Выгрузка выбранного датасета с изменениями и прогнозом времени всех моделей
-  function downloadCsv() {
-    const columns = BUNDLE.columns;
-    const header = ['', ...columns, 'edited', ...MODEL_KEYS.flatMap((m) => [`predicted_time_${m}`, `risk_1y_${m}`])];
-    const lines = [header.join(',')];
-    for (const g of ds.rows) {
-      const cells = [PATIENTS.id[g]];
-      for (const c of columns) {
-        if (c === 'time') cells.push(PATIENTS.time[g]);
-        else if (c === 'target') cells.push(PATIENTS.target[g]);
-        else cells.push(state.values[g][FEATURES.indexOf(c)]);
-      }
-      cells.push(editedSet.has(g) ? 1 : 0, ...MODEL_KEYS.flatMap((m) => [curTime[m][g], curRisk[m][g].toFixed(4)]));
-      lines.push(cells.join(','));
-    }
-    const url = URL.createObjectURL(new Blob([lines.join('\n') + '\n'], { type: 'text/csv' }));
-    const a = el('a', { href: url, download: `${ds.file.replace(/\.\w+$/, '')}_edited.csv` });
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   function effectiveDark() {
@@ -1392,8 +1351,6 @@
     syncEditor();
     renderPatientBar();
     renderPrediction();
-    for (const g of ds.rows) updateTableRow(g);
-    sortTable();
     hideTooltip();
     save();
   }
@@ -1459,7 +1416,6 @@
       save();
     });
     $('reset-all').disabled = editedSet.size === 0;
-    $('download').addEventListener('click', downloadCsv);
 
     $('theme-toggle').addEventListener('click', () => {
       state.theme = effectiveDark() ? 'light' : 'dark';
@@ -1470,8 +1426,6 @@
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', themeChanged);
 
     buildEditor();
-    buildTableHead();
-    buildTableBody();
     readColors();
     themeChanged();
     selectPatient(state.selected);

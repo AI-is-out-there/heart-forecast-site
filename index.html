@@ -143,9 +143,9 @@
   .card-sub { color: var(--ink-2); font-size: 13px; }
   @media (min-width: 1100px) {
     .layout { grid-template-columns: minmax(0, 1.3fr) minmax(400px, 1fr); align-items: start; }
-    #map-card { grid-column: 1; grid-row: 1; }
-    #prediction-card { grid-column: 1; grid-row: 2; }
-    #table-card { grid-column: 1; grid-row: 3; }
+    #summary-card { grid-column: 1; grid-row: 1; }
+    #map-card { grid-column: 1; grid-row: 2; }
+    #prediction-card { grid-column: 1; grid-row: 3; }
     #method-card { grid-column: 1; grid-row: 4; }
     #editor-card {
       grid-column: 2; grid-row: 1 / span 4;
@@ -296,6 +296,18 @@
   .confusion-table tfoot tr:last-child td { border-bottom: 0; }
   .confusion-table tr.active td:first-child { box-shadow: inset 3px 0 0 var(--ink); }
   #confusion-summary { color: var(--ink-2); font-size: 13px; }
+  /* Краткая сводка: матрица ошибок 2 × 2 за 12 месяцев, чувствительность и специфичность */
+  .summary-grid { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 32px; }
+  .summary-grid .table-scroll { flex: 1 1 420px; }
+  .summary-grid .facts { flex: 1 1 240px; }
+  .summary-table { margin-top: 0; }
+  .summary-table tbody tr { cursor: default; }
+  .summary-table tbody tr:hover { background: none; }
+  .summary-table td.hit { background: var(--wash); font-weight: 600; }
+  .summary-table td small { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
+  #confusion-how-title { margin-top: 12px; }
+  .confusion-how { margin: 4px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 12.5px; }
+  .confusion-how li { margin: 2px 0; }
   #confusion-summary b { color: var(--ink); font-weight: 600; }
 
   /* Редактор параметров */
@@ -336,21 +348,6 @@
   .param input[type="range"] { grid-area: range; width: 100%; }
   .param input[type="number"] { grid-area: num; width: 100%; text-align: right; }
   .param .reset { grid-area: reset; width: 30px; height: 28px; padding: 0; color: var(--ink-2); }
-
-  /* Табличное представление */
-  details.card > summary { cursor: pointer; font-weight: 600; font-size: 15px; }
-  details.card > summary .card-sub { font-weight: 400; margin-left: 6px; }
-  .patients-scroll { max-height: 440px; overflow: auto; margin-top: 10px; border: 1px solid var(--grid); border-radius: 6px; }
-  .patients { width: 100%; font-size: 13px; }
-  .patients th, .patients td { padding: 5px 10px; text-align: right; border-bottom: 1px solid var(--grid); white-space: nowrap; }
-  .patients th:nth-child(3), .patients td:nth-child(3) { text-align: left; }
-  .patients thead th { position: sticky; top: 0; background: var(--surface); color: var(--ink-2); font-weight: 500; }
-  .patients thead button { all: unset; cursor: pointer; }
-  .patients thead button:focus-visible { outline: 2px solid var(--focus); }
-  .patients tbody tr { cursor: pointer; }
-  .patients tbody tr:hover { background: var(--wash); }
-  .patients tbody tr.active { background: var(--wash); box-shadow: inset 3px 0 0 var(--ink); }
-  .outcome { display: inline-flex; align-items: center; gap: 6px; }
 
   .method { color: var(--ink-2); }
   .method ul { margin: 8px 0 0; padding-left: 18px; }
@@ -397,10 +394,26 @@
     </div>
     <div class="spacer"></div>
     <button id="reset-all" type="button" data-i18n="resetAll"></button>
-    <button id="download" type="button" data-i18n="download"></button>
   </div>
 
   <main class="layout">
+    <section class="card" id="summary-card" aria-labelledby="summary-title">
+      <div class="card-head">
+        <h2 id="summary-title"></h2>
+        <span class="card-sub" id="summary-sub"></span>
+      </div>
+      <div class="summary-grid">
+        <div class="table-scroll">
+          <table class="models summary-table" id="summary-table">
+            <thead><tr></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <dl class="facts" id="summary-stats"></dl>
+      </div>
+      <p class="chart-note" id="summary-note"></p>
+    </section>
+
     <section class="card" id="map-card" aria-labelledby="map-title">
       <div class="card-head">
         <h2 id="map-title" data-i18n="map.title"></h2>
@@ -488,6 +501,8 @@
           </table>
         </div>
         <p class="chart-note" id="confusion-summary"></p>
+        <div class="profile-title" id="confusion-how-title"></div>
+        <ul class="confusion-how" id="confusion-how"></ul>
         <p class="chart-note" id="confusion-note"></p>
       </div>
     </section>
@@ -513,16 +528,6 @@
       <div class="param-list" id="param-list"></div>
     </section>
 
-    <details class="card" id="table-card">
-      <summary><span data-i18n="table.summary"></span> <span class="card-sub" data-i18n="table.sub"></span></summary>
-      <div class="patients-scroll">
-        <table class="patients" id="patients-table">
-          <thead><tr></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </details>
-
     <section class="card method" id="method-card" aria-labelledby="method-title">
       <h2 id="method-title" data-i18n="method.title"></h2>
       <ul data-i18n-html="method.list"></ul>
@@ -536,10 +541,10 @@
   </footer>
 </div>
 
-<script src="i18n.js?v=44fa5565b9"></script>
-<script src="survival_model.js?v=8112c688fd"></script>
-<script src="survival_predictor.js?v=5f1c63727d"></script>
+<script src="i18n.js?v=54bc11217c"></script>
+<script src="survival_model.js?v=a33afa1bd0"></script>
+<script src="survival_predictor.js?v=0fc7a13218"></script>
 <script src="tsne.js?v=2646a80490"></script>
-<script src="app.js?v=1e7906e3f5"></script>
+<script src="app.js?v=932c412d2a"></script>
 </body>
 </html>
