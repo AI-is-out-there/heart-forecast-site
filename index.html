@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Survival Time Explorer</title>
+<meta name="description" content="Interactive t-SNE map of 408 acute coronary syndrome patients: select a patient, edit clinical parameters and re-predict survival time with the models of Survival-function-analysys.ipynb.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='10' cy='12' r='5' fill='%232a78d6'/%3E%3Ccircle cx='21' cy='20' r='5' fill='%23eb6834'/%3E%3Ccircle cx='22' cy='8' r='3' fill='%231baf7a'/%3E%3C/svg%3E">
+<script>
+  // Тема из прошлого визита — до отрисовки, чтобы не было вспышки
+  try {
+    const saved = JSON.parse(localStorage.getItem('survival-explorer:v1') || '{}');
+    if (saved.theme === 'light' || saved.theme === 'dark') document.documentElement.dataset.theme = saved.theme;
+  } catch (e) { /* хранилище недоступно — тема по настройкам системы */ }
+</script>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #6f6e69;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --border-strong: rgba(11, 11, 11, 0.18);
+    --wash: rgba(11, 11, 11, 0.04);
+    --shadow: 0 6px 20px rgba(11, 11, 11, 0.12);
+    --t0: #2a78d6;
+    --t1: #eb6834;
+    --edit: #1baf7a;
+    --focus: #2a78d6;
+    --risk0: #5dc656;
+    --risk1: #2579dc;
+    --risk2: #e65815;
+    --risk3: #a91320;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #f0efec;
+      --ink-2: #c3c2b7;
+      --muted: #9a9890;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --border-strong: rgba(255, 255, 255, 0.18);
+      --wash: rgba(255, 255, 255, 0.05);
+      --shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+      --t0: #3987e5;
+      --t1: #d95926;
+      --edit: #199e70;
+      --focus: #3987e5;
+      --risk0: #349659;
+      --risk1: #3987e5;
+      --risk2: #df591f;
+      --risk3: #b00a1e;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --muted: #9a9890;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --border-strong: rgba(255, 255, 255, 0.18);
+    --wash: rgba(255, 255, 255, 0.05);
+    --shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+    --t0: #3987e5;
+    --t1: #d95926;
+    --edit: #199e70;
+    --focus: #3987e5;
+    --risk0: #349659;
+    --risk1: #3987e5;
+    --risk2: #df591f;
+    --risk3: #b00a1e;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: inherit; text-decoration-color: var(--axis); text-underline-offset: 2px; }
+  a:hover { text-decoration-color: currentColor; }
+  code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  .page { max-width: 1480px; margin: 0 auto; padding: 20px 16px 40px; }
+  .top { display: flex; gap: 16px; align-items: flex-start; justify-content: space-between; }
+  h1 { font-size: 22px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 4px; }
+  .lede { margin: 0; color: var(--ink-2); max-width: 88ch; }
+  .lede b { color: var(--ink); font-weight: 600; }
+
+  input[type="range"] { accent-color: var(--ink-2); min-width: 0; }
+  input[type="number"], select {
+    font: inherit; color: var(--ink); background: var(--page);
+    border: 1px solid var(--border-strong); border-radius: 6px; padding: 4px 6px; min-width: 0;
+  }
+  input[type="number"] { font-variant-numeric: tabular-nums; }
+  input[aria-invalid="true"] { border-color: var(--t1); }
+  button {
+    font: inherit; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--border-strong); border-radius: 6px; padding: 5px 10px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--wash); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .icon-btn { width: 32px; height: 30px; padding: 0; display: inline-grid; place-items: center; }
+  .top-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+  .lang { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 6px; overflow: hidden; }
+  .lang button { border: 0; border-radius: 0; height: 28px; padding: 0 10px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+  .lang button + button { border-left: 1px solid var(--border-strong); }
+  .lang button[aria-pressed="true"] { background: var(--ink); color: var(--surface); cursor: default; }
+
+  .toolbar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px;
+    margin: 16px 0; padding: 10px 14px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  }
+  .control { display: flex; align-items: center; gap: 8px; }
+  .control > label { color: var(--ink-2); font-size: 13px; white-space: nowrap; }
+  .control { min-width: 0; max-width: 100%; }
+  .control select { min-width: 0; max-width: 100%; }
+  #perplexity-range { width: 160px; }
+  #perplexity-num { width: 64px; }
+  .toolbar .spacer { flex: 1; }
+
+  .layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .card h2 { font-size: 15px; font-weight: 600; margin: 0; }
+  .card-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; margin-bottom: 10px; }
+  .card-sub { color: var(--ink-2); font-size: 13px; }
+  @media (min-width: 1100px) {
+    .layout { grid-template-columns: minmax(0, 1.3fr) minmax(400px, 1fr); align-items: start; }
+    #map-card { grid-column: 1; grid-row: 1; }
+    #prediction-card { grid-column: 1; grid-row: 2; }
+    #table-card { grid-column: 1; grid-row: 3; }
+    #method-card { grid-column: 1; grid-row: 4; }
+    #editor-card {
+      grid-column: 2; grid-row: 1 / span 4;
+      position: sticky; top: 12px; max-height: calc(100vh - 24px);
+      display: flex; flex-direction: column;
+    }
+    #editor-card .param-list { overflow-y: auto; flex: 1; }
+  }
+
+  /* Карта t-SNE */
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--ink-2); font-size: 12.5px; }
+  .key { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot.t0 { background: var(--t0); }
+  .dot.t1 { background: var(--t1); }
+  /* Цвет по группе риска: зелёный — низкий, синий — умеренный, оранжевый — высокий, красный — очень высокий; размер
+     точки растёт с группой (порядок виден и без различения цветов). В этом режиме цвет на карте означает только риск:
+     ромбы окрашены по риску, отметки изменённых пациентов — нейтральные */
+  .dot.risk0 { background: var(--risk0); width: 8px; height: 8px; }
+  .dot.risk1 { background: var(--risk1); }
+  .dot.risk2 { background: var(--risk2); width: 11px; height: 11px; }
+  .dot.risk3 { background: var(--risk3); width: 13px; height: 13px; }
+  .legend.by-risk .diamond { background: var(--surface); }
+  .legend.by-risk .edit-key b { background: var(--muted); }
+  .legend.by-risk .edit-key em { border-color: var(--muted); }
+  .risk-keys { display: contents; }
+  .legend [hidden] { display: none; }
+  .risk-change { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 8px 0 0; font-size: 13px; color: var(--ink-2); }
+  .risk-change[hidden] { display: none; }
+  .risk-change b { color: var(--ink); font-weight: 600; }
+  .diamond { width: 8px; height: 8px; background: var(--t1); border: 1.5px solid var(--ink); transform: rotate(45deg); display: inline-block; margin: 0 2px; flex: none; }
+  .diamond.t0 { background: var(--t0); }
+  .diamond.t1 { background: var(--t1); }
+  .marked-key { white-space: normal; }
+  .highlight-key { cursor: pointer; }
+  .highlight-key input { margin: 0; accent-color: var(--ink); }
+  .callout { margin-top: 14px; padding: 10px 12px; border-left: 3px solid var(--t1); background: var(--wash); border-radius: 6px; font-size: 13px; color: var(--ink-2); }
+  .callout.survivor { border-left-color: var(--t0); }
+  .callout.quality { border-left-color: var(--ink-2); }
+  .callout b { display: flex; align-items: center; gap: 8px; color: var(--ink); margin-bottom: 2px; }
+  .tt-note { max-width: 300px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--grid); color: var(--ink-2); display: flex; gap: 8px; align-items: baseline; }
+  .ring { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ink); display: inline-block; }
+  .edit-key { display: inline-flex; align-items: center; }
+  .edit-key i { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--muted); display: inline-block; }
+  .edit-key b { width: 14px; height: 2px; background: var(--edit); display: inline-block; }
+  .edit-key em { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--edit); display: inline-block; }
+  .map-wrap { position: relative; height: clamp(300px, min(62vh, 92vw), 640px); }
+  #map { width: 100%; height: 100%; display: block; cursor: crosshair; border-radius: 6px; }
+  .map-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; margin-top: 8px; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+
+  .tooltip {
+    position: absolute; z-index: 5; pointer-events: none; display: none;
+    min-width: 200px; padding: 8px 10px; font-size: 12.5px;
+    background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: var(--shadow);
+  }
+  .tt-title { display: flex; align-items: center; gap: 6px; color: var(--ink-2); margin-bottom: 4px; }
+  .tt-row { display: flex; align-items: baseline; gap: 10px; }
+  .tt-row b { font-weight: 650; min-width: 74px; font-variant-numeric: tabular-nums; }
+  .tt-row span { color: var(--ink-2); }
+  .tt-key { width: 12px; height: 2px; display: inline-block; flex: none; align-self: center; }
+
+  /* Прогноз */
+  .pred-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px 24px; }
+  @media (max-width: 640px) { .pred-top { grid-template-columns: minmax(0, 1fr); } }
+  .hero-label { color: var(--ink-2); font-size: 13px; }
+  .hero-value { font-size: 48px; font-weight: 650; line-height: 1.05; letter-spacing: -0.02em; margin: 2px 0; }
+  .hero-value .unit { font-size: 18px; font-weight: 500; letter-spacing: 0; color: var(--ink-2); margin-left: 4px; }
+  .hero-sub { color: var(--muted); font-size: 12.5px; }
+  .delta { margin-top: 6px; font-size: 13px; color: var(--ink-2); }
+  .delta b { color: var(--ink); font-weight: 600; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px 18px; margin: 0; align-content: start; }
+  .facts dt { color: var(--ink-2); font-size: 12.5px; }
+  .facts dd { margin: 0; font-size: 20px; font-weight: 600; }
+  .facts small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
+  .facts .fact-text { display: block; font-size: 15px; line-height: 1.3; }
+
+  /* Риски смерти от ССЗ к срокам */
+  .risk-profile { display: grid; gap: 6px; margin-top: 16px; }
+  .profile-title { color: var(--ink-2); font-size: 13px; }
+  .profile-row {
+    display: grid; grid-template-columns: minmax(0, 13em) minmax(80px, 1fr) 4em minmax(0, 11em);
+    grid-template-areas: "label track value note"; align-items: center; gap: 2px 12px; font-size: 13px;
+  }
+  .profile-label { grid-area: label; color: var(--ink-2); }
+  .profile-track { grid-area: track; position: relative; height: 10px; background: var(--wash); border-radius: 4px; }
+  .profile-bar { position: absolute; left: 0; top: 0; bottom: 0; min-width: 2px; border-radius: 0 4px 4px 0; }
+  .profile-bar.t0 { background: var(--t0); }
+  .profile-bar.t1 { background: var(--t1); }
+  .profile-cohort { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--ink); border-radius: 1px; }
+  .profile-row b { grid-area: value; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .profile-row small { grid-area: note; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .profile-group { font-size: 13px; color: var(--ink-2); }
+  .profile-group b { color: var(--ink); font-weight: 600; }
+  .profile-outcome { font-size: 13px; color: var(--ink-2); margin-top: 2px; }
+  @media (max-width: 640px) {
+    .profile-row { grid-template-columns: minmax(0, 1fr) 4em; grid-template-areas: "label value" "track track" "note note"; }
+  }
+
+  .chart { position: relative; margin-top: 16px; }
+  .chart svg { display: block; width: 100%; height: 250px; overflow: visible; }
+  .chart svg:focus-visible { outline-offset: 4px; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 6px; color: var(--ink-2); font-size: 12.5px; }
+  .line-key { width: 16px; height: 2px; display: inline-block; }
+  .chart-note { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; }
+  .ax-grid { stroke: var(--grid); stroke-width: 1; }
+  .ax-base { stroke: var(--axis); stroke-width: 1; }
+  .ax-text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .ax-title { fill: var(--ink-2); font-size: 11.5px; }
+  .curve { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .curve.base { stroke: var(--ink-2); }
+  .curve.edit { stroke: var(--edit); }
+  .area.base { fill: var(--ink-2); opacity: 0.08; }
+  .area.edit { fill: var(--edit); opacity: 0.12; }
+  .event-line { stroke: var(--ink); stroke-width: 1; }
+  .event-label { fill: var(--ink); font-size: 11.5px; paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
+  .crosshair { stroke: var(--axis); stroke-width: 1; }
+  .cross-dot { stroke: var(--surface); stroke-width: 2; }
+  .cross-dot.base { fill: var(--ink-2); }
+  .cross-dot.edit { fill: var(--edit); }
+
+  table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  .models { width: 100%; font-size: 13px; margin-top: 14px; }
+  .models th, .models td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--grid); }
+  .models th { color: var(--ink-2); font-weight: 500; font-size: 12.5px; }
+  .models td { white-space: nowrap; }
+  .models th:first-child, .models td:first-child { text-align: left; white-space: normal; }
+  .models tbody tr { cursor: pointer; }
+  .models tbody tr:hover { background: var(--wash); }
+  .models tr.active td { font-weight: 600; }
+  .models label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+  .models input[type="radio"] { accent-color: var(--ink); margin: 0; }
+  .table-scroll { overflow-x: auto; }
+  .horizon-bar { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--ink-2); font-size: 13px; }
+  .horizon-bar + .table-scroll .models { margin-top: 6px; }
+  .calib { margin-top: 18px; }
+  .calib-table { margin-top: 6px; }
+  .calib-table tbody tr { cursor: default; }
+  .calib-table tbody tr:hover { background: none; }
+  .calib-table td.active, .calib-table th.active { background: var(--wash); }
+  /* Матрица ошибок: заливка — доля пациентов строки, рамка — диагональ (совпадение групп), справа и снизу —
+     фактическая смертность; ячейка выбранного пациента обведена */
+  .confusion-table td.cell { --share: 0; background: color-mix(in srgb, var(--t0) calc(var(--share) * 55%), transparent); }
+  .confusion-table td.diag { box-shadow: inset 0 0 0 1.5px var(--ink-2); }
+  .confusion-table td.patient { box-shadow: inset 0 0 0 2.5px var(--edit); }
+  .confusion-table td small { display: block; color: var(--ink-2); font-size: 11px; font-weight: 400; }
+  .confusion-table td.fact, .confusion-table th.fact { border-left: 1px solid var(--axis); }
+  .confusion-table tfoot td { color: var(--ink-2); }
+  .confusion-table tfoot tr:last-child td { border-bottom: 0; }
+  .confusion-table tr.active td:first-child { box-shadow: inset 3px 0 0 var(--ink); }
+  #confusion-summary { color: var(--ink-2); font-size: 13px; }
+  #confusion-summary b { color: var(--ink); font-weight: 600; }
+
+  /* Редактор параметров */
+  .patient-bar { display: grid; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .patient-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .patient-row h2 { margin-right: 4px; }
+  #patient-id { width: 86px; }
+  #patient-row { flex: 1; min-width: 120px; }
+  #patient-row-out { color: var(--ink-2); font-size: 13px; font-variant-numeric: tabular-nums; min-width: 92px; text-align: right; }
+  .msg { color: var(--ink-2); font-size: 12.5px; }
+  .badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px;
+    font-size: 12px; color: var(--ink-2); border: 1px solid var(--border-strong); border-radius: 999px;
+  }
+  .badge .ring-sm { width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--edit); display: inline-block; }
+  .badges button { font-size: 12px; padding: 2px 9px; border-radius: 999px; margin-left: auto; }
+  .mini { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 13px; color: var(--ink-2); }
+  .mini b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .param-list { margin: 0 -16px -14px; padding: 2px 16px 14px; }
+  .group h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; margin: 14px 0 4px; }
+  .param {
+    display: grid; grid-template-columns: minmax(0, 1fr) 86px 30px; grid-template-areas: "head head head" "range num reset";
+    align-items: center; gap: 2px 8px; padding: 6px 8px 6px 10px; border-left: 3px solid transparent; border-radius: 6px;
+  }
+  .param.edited { border-left-color: var(--edit); background: var(--wash); }
+  .param-head { grid-area: head; display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 13px; min-width: 0; }
+  .param-name { min-width: 0; }
+  .param-name label { font-weight: 550; }
+  .param-name code { color: var(--muted); font-size: 11px; margin-left: 4px; }
+  .param-enc { color: var(--muted); font-size: 12px; }
+  .param.unused .param-name label { color: var(--ink-2); font-weight: 450; }
+  .param-orig { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .param.edited .param-orig { color: var(--ink-2); }
+  .param.implausible { border-left-color: var(--ink-2); }
+  .param.implausible .param-orig { color: var(--ink); white-space: normal; text-align: right; }
+  .param input[type="range"] { grid-area: range; width: 100%; }
+  .param input[type="number"] { grid-area: num; width: 100%; text-align: right; }
+  .param .reset { grid-area: reset; width: 30px; height: 28px; padding: 0; color: var(--ink-2); }
+
+  /* Табличное представление */
+  details.card > summary { cursor: pointer; font-weight: 600; font-size: 15px; }
+  details.card > summary .card-sub { font-weight: 400; margin-left: 6px; }
+  .patients-scroll { max-height: 440px; overflow: auto; margin-top: 10px; border: 1px solid var(--grid); border-radius: 6px; }
+  .patients { width: 100%; font-size: 13px; }
+  .patients th, .patients td { padding: 5px 10px; text-align: right; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  .patients th:nth-child(3), .patients td:nth-child(3) { text-align: left; }
+  .patients thead th { position: sticky; top: 0; background: var(--surface); color: var(--ink-2); font-weight: 500; }
+  .patients thead button { all: unset; cursor: pointer; }
+  .patients thead button:focus-visible { outline: 2px solid var(--focus); }
+  .patients tbody tr { cursor: pointer; }
+  .patients tbody tr:hover { background: var(--wash); }
+  .patients tbody tr.active { background: var(--wash); box-shadow: inset 3px 0 0 var(--ink); }
+  .outcome { display: inline-flex; align-items: center; gap: 6px; }
+
+  .method { color: var(--ink-2); }
+  .method ul { margin: 8px 0 0; padding-left: 18px; }
+  .method li { margin: 4px 0; }
+  .method pre { margin: 8px 0 0; padding: 10px 12px; background: var(--wash); border-radius: 6px; overflow-x: auto; }
+  footer { margin-top: 20px; color: var(--muted); font-size: 12.5px; }
+
+  @media (max-width: 1099px) {
+    #editor-card .patient-bar { position: sticky; top: 0; z-index: 3; background: var(--surface); margin: -14px -16px 0; padding: 14px 16px 12px; border-radius: 10px 10px 0 0; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <div>
+      <h1 data-i18n="h1"></h1>
+      <p class="lede" data-i18n-html="lede"></p>
+    </div>
+    <div class="top-actions">
+      <div class="lang" role="group" data-i18n-aria-label="lang.group" aria-label="Language">
+        <button type="button" data-lang="en" lang="en" aria-pressed="true">EN</button>
+        <button type="button" data-lang="ru" lang="ru" aria-pressed="false">RU</button>
+      </div>
+      <button id="theme-toggle" class="icon-btn" type="button" aria-label="Switch theme">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5a6.5 6.5 0 0 1 0 13z" fill="currentColor"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="toolbar" role="group" data-i18n-aria-label="toolbar.aria">
+    <div class="control">
+      <label for="dataset-select" data-i18n="dataset.label"></label>
+      <select id="dataset-select"></select>
+    </div>
+    <div class="control">
+      <label for="perplexity-range" data-i18n="perplexity.label"></label>
+      <input id="perplexity-range" type="range" min="2" max="100" step="1">
+      <input id="perplexity-num" type="number" min="2" max="100" step="1" data-i18n-aria-label="perplexity.aria">
+    </div>
+    <div class="control">
+      <label for="model-select" data-i18n="model.label"></label>
+      <select id="model-select"></select>
+    </div>
+    <div class="spacer"></div>
+    <button id="reset-all" type="button" data-i18n="resetAll"></button>
+    <button id="download" type="button" data-i18n="download"></button>
+  </div>
+
+  <main class="layout">
+    <section class="card" id="map-card" aria-labelledby="map-title">
+      <div class="card-head">
+        <h2 id="map-title" data-i18n="map.title"></h2>
+        <div class="legend" id="map-legend">
+          <label class="key highlight-key"><input type="checkbox" id="color-risk"><span data-i18n="risk.toggle"></span></label>
+          <span class="key outcome-key"><span class="dot t1"></span><span id="legend-t1"></span></span>
+          <span class="key outcome-key"><span class="dot t0"></span><span id="legend-t0"></span></span>
+          <span class="risk-keys" id="risk-keys" hidden></span>
+          <span class="key"><span class="ring"></span><span data-i18n="legend.selected"></span></span>
+          <span class="key"><span class="edit-key"><i></i><b></b><em></em></span><span data-i18n="legend.edited"></span></span>
+          <span class="key marked-key"><span class="diamond t1"></span><span id="legend-sudden"></span></span>
+          <span class="key marked-key"><span class="diamond t0"></span><span id="legend-unexpected"></span></span>
+          <label class="key highlight-key"><input type="checkbox" id="highlight-sudden"><span data-i18n="sudden.highlight"></span></label>
+        </div>
+      </div>
+      <div class="map-wrap" id="map-wrap">
+        <canvas id="map" tabindex="0" role="img" data-i18n-aria-label="map.aria"></canvas>
+        <div class="tooltip" id="map-tooltip" role="status"></div>
+      </div>
+      <p class="risk-change" id="risk-change" role="status" hidden></p>
+      <div class="map-foot">
+        <span id="tsne-status" data-i18n="status.initial"></span>
+        <span data-i18n="map.hint"></span>
+      </div>
+    </section>
+
+    <section class="card" id="prediction-card" aria-labelledby="prediction-title">
+      <div class="card-head">
+        <h2 id="prediction-title" data-i18n="pred.title"></h2>
+        <span class="card-sub" id="prediction-sub"></span>
+      </div>
+      <div class="pred-top">
+        <div>
+          <div class="hero-label" id="hero-label"></div>
+          <div class="hero-value" id="hero-value"></div>
+          <div class="hero-sub" id="hero-sub"></div>
+          <div class="delta" id="hero-delta"></div>
+        </div>
+        <dl class="facts" id="facts"></dl>
+      </div>
+      <div class="risk-profile" id="risk-profile"></div>
+      <div class="callout" id="sudden-note" hidden></div>
+      <div class="callout quality" id="quality-note" hidden></div>
+      <div class="chart" id="survival-chart"></div>
+      <div class="chart-legend" id="survival-legend"></div>
+      <p class="chart-note" data-i18n-html="chart.note"></p>
+      <div class="horizon-bar">
+        <label for="horizon-select" data-i18n="models.horizon"></label>
+        <select id="horizon-select"></select>
+      </div>
+      <div class="table-scroll">
+        <table class="models" id="model-table" data-i18n-aria-label="models.aria">
+          <thead>
+            <tr>
+              <th scope="col" data-i18n="models.model"></th>
+              <th scope="col" data-i18n="models.cindex"></th>
+              <th scope="col" data-i18n="models.auc"></th>
+              <th scope="col" data-i18n="models.eo"></th>
+              <th scope="col" data-i18n="models.ibs"></th>
+              <th scope="col" data-i18n="models.base"></th>
+              <th scope="col" data-i18n="models.edit"></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="chart-note" id="models-note"></p>
+      <div class="calib" id="calibration">
+        <div class="profile-title" id="calib-title"></div>
+        <div class="table-scroll">
+          <table class="models calib-table" id="calib-table">
+            <thead><tr></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="chart-note" id="calib-note"></p>
+      </div>
+      <div class="calib" id="confusion">
+        <div class="profile-title" id="confusion-title"></div>
+        <div class="table-scroll">
+          <table class="models calib-table confusion-table" id="confusion-table">
+            <thead><tr></tr></thead>
+            <tbody></tbody>
+            <tfoot></tfoot>
+          </table>
+        </div>
+        <p class="chart-note" id="confusion-summary"></p>
+        <p class="chart-note" id="confusion-note"></p>
+      </div>
+    </section>
+
+    <section class="card" id="editor-card" aria-labelledby="patient-title">
+      <div class="patient-bar">
+        <div class="patient-row">
+          <h2 id="patient-title" data-i18n="patient.title"></h2>
+          <button id="prev-patient" class="icon-btn" type="button" data-i18n-aria-label="patient.prev">‹</button>
+          <label for="patient-id" class="msg" data-i18n="patient.id"></label>
+          <input id="patient-id" type="number" min="0" step="1" inputmode="numeric">
+          <button id="next-patient" class="icon-btn" type="button" data-i18n-aria-label="patient.next">›</button>
+          <span class="msg" id="patient-msg" role="status"></span>
+        </div>
+        <div class="patient-row">
+          <label for="patient-row" class="msg" data-i18n="patient.row"></label>
+          <input id="patient-row" type="range" min="0" step="1">
+          <output id="patient-row-out" for="patient-row"></output>
+        </div>
+        <div class="badges" id="patient-badges"></div>
+        <div class="mini" id="mini-summary" aria-live="polite"></div>
+      </div>
+      <div class="param-list" id="param-list"></div>
+    </section>
+
+    <details class="card" id="table-card">
+      <summary><span data-i18n="table.summary"></span> <span class="card-sub" data-i18n="table.sub"></span></summary>
+      <div class="patients-scroll">
+        <table class="patients" id="patients-table">
+          <thead><tr></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </details>
+
+    <section class="card method" id="method-card" aria-labelledby="method-title">
+      <h2 id="method-title" data-i18n="method.title"></h2>
+      <ul data-i18n-html="method.list"></ul>
+      <pre><code>python scripts/survival_time_predictor.py predict --id 1444 --set age=70 ef_hosp=35</code></pre>
+    </section>
+  </main>
+
+  <footer id="footer">
+    <a href="https://github.com/D2718281828nis/BioMedAI-Heart-Desease-LifeTime-Forecast">BioMedAI-Heart-Desease-LifeTime-Forecast</a> ·
+    <span data-i18n="footer.license"></span> · <span id="generated"></span>
+  </footer>
+</div>
+
+<script src="i18n.js?v=44fa5565b9"></script>
+<script src="survival_model.js?v=8112c688fd"></script>
+<script src="survival_predictor.js?v=5f1c63727d"></script>
+<script src="tsne.js?v=2646a80490"></script>
+<script src="app.js?v=1e7906e3f5"></script>
+</body>
+</html>
