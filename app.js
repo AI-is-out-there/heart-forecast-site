@@ -2,7 +2,7 @@
  * Интерактивная карта пациентов: t-SNE, выбор и редактирование пациента, прогноз времени дожития.
  * Данные и параметры моделей — docs/survival_model.js (scripts/survival_time_predictor.py export).
  *
- * Пациенты — все строки med_dataset_cardio.xlsx (глобальный индекс g); balanced_dataset.csv — подмножество
+ * Пациенты — все строки med_dataset_cardio.xlsx (глобальный индекс g); balanced_dataset_all_cause.csv — подмножество
  * этих строк. Карта и номер строки относятся к выбранному датасету (локальный индекс i = ds.local[g]).
  */
 (function () {
@@ -22,7 +22,7 @@
   const HORIZONS = BUNDLE.meta.horizons;
   const COHORT_RISKS = BUNDLE.meta.cohort_risks;
   const DEFAULT_HORIZON = HORIZONS.length - 1;
-  // Модель по умолчанию: для balanced_dataset.csv — многоэтапный конвейер, для всей когорты — CoxPH. Все модели
+  // Модель по умолчанию: для balanced_dataset_all_cause.csv — многоэтапный конвейер, для всей когорты — CoxPH. Все модели
   // откалиброваны на всю когорту, поэтому метрики в таблице моделей — на отложенных пациентах всей когорты
   const DEFAULT_MODELS = { balanced: 'stg', full: 'cph' };
   // Признаки моделей (остальные в редакторе помечены «не используется»)
@@ -68,7 +68,7 @@
     crea: { step: 1, group: 'labs' },
   };
   const GROUPS = ['demo', 'vitals', 'comorb', 'event', 'treat', 'labs'];
-  // patients.split: 0 — обучающий, цензурирован до τ; 1 — обучающий из balanced_dataset.csv; 2 — отложенная выборка
+  // patients.split: 0 — обучающий, цензурирован до τ; 1 — обучающий из balanced_dataset_all_cause.csv; 2 — отложенная выборка
   const SPLIT_KEYS = ['patient.calib', 'patient.train', 'patient.test'];
 
   const { t } = I18N;
@@ -160,6 +160,9 @@
     highlightSudden: saved.highlightSudden === true,
     // Цвет точек карты: исход (по умолчанию) или группа риска выбранной модели по прогнозу на 12 месяцев
     colorByRisk: saved.colorByRisk === true,
+    // Матрица 2 × 2: обучающая выборка (прогнозы вне выборки по кросс-валидации) и/или тестовая (отложенная)
+    summaryTrain: saved.summaryTrain !== false,
+    summaryTest: saved.summaryTest === true,
     horizon: Number.isInteger(saved.horizon) && saved.horizon >= 0 && saved.horizon < HORIZONS.length ? saved.horizon : DEFAULT_HORIZON,
     values: PATIENTS.X.map((row) => row.slice()),
   };
@@ -196,6 +199,7 @@
           dataset: state.dataset, perplexity: state.perplexity, models: state.models, defaults: DEFAULT_MODELS,
           selectedId: PATIENTS.id[state.selected],
           theme: state.theme, lang: I18N.lang, highlightSudden: state.highlightSudden, colorByRisk: state.colorByRisk,
+          summaryTrain: state.summaryTrain, summaryTest: state.summaryTest,
           horizon: state.horizon, editsById,
         }));
       } catch (e) { /* хранилище недоступно — состояние живёт только до перезагрузки */ }
@@ -898,20 +902,37 @@
 
   // Краткая сводка: матрица ошибок 2 × 2 за 12 месяцев. Строки — прогноз модели, сгруппированный по порогу
   // RISK_GROUP_EDGES[1] (низкий + умеренный против высокого + очень высокого), столбцы — фактический исход у пациентов
-  // с известным за 12 месяцев исходом; прогнозы вне выборки, те же, что в матрице 4 × 4
+  // с известным за 12 месяцев исходом. Обучающая выборка — прогнозы вне выборки (кросс-валидация), те же, что
+  // в матрице 4 × 4; тестовая (отложенная, split = 2) — прогноз итоговой модели по исходным значениям датасета
   function renderSummary() {
     const m = state.model, conf = BUNDLE.confusion;
     const cells = conf.models[m].cells;
-    const K = cells.length, split = 2;
-    // [умерли, пережили 12 мес.] по прогнозной строке; пациенты с неизвестным исходом не входят
-    const outcomeOf = (i) => cells[i].reduce(([d, s], [, died, known]) => [d + died, s + known - died], [0, 0]);
-    const low = [0, 0], high = [0, 0];
-    for (let i = 0; i < K; i++) {
-      const [d, s] = outcomeOf(i);
-      const into = i < split ? low : high;
-      into[0] += d;
-      into[1] += s;
+    const K = cells.length, split = 2, h = HORIZONS[HORIZONS.length - 1];
+    const low = [0, 0], high = [0, 0]; // [умерли, пережили 12 мес.]; пациенты с неизвестным исходом не входят
+    let nTrain = 0, nTest = 0;
+    if (state.summaryTrain) {
+      for (let i = 0; i < K; i++) {
+        const [d, s] = cells[i].reduce(([d, s], [, died, known]) => [d + died, s + known - died], [0, 0]);
+        const into = i < split ? low : high;
+        into[0] += d;
+        into[1] += s;
+        nTrain += d + s;
+      }
     }
+    if (state.summaryTest) {
+      for (let g = 0; g < NP; g++) {
+        if (PATIENTS.split[g] !== 2) continue;
+        const died = PATIENTS.target[g] === 1 && PATIENTS.time[g] <= h;
+        if (!died && PATIENTS.time[g] <= h) continue; // цензурирован до 12 месяцев — исход неизвестен
+        const into = predictor.riskGroup(baseRisk[m][g]) < split ? low : high;
+        into[died ? 0 : 1]++;
+        nTest++;
+      }
+    }
+    $('summary-train').checked = state.summaryTrain;
+    $('summary-test').checked = state.summaryTest;
+    $('summary-train-label').textContent = t('summary.train', { n: fmtDays(BUNDLE.meta.cv_size) });
+    $('summary-test-label').textContent = t('summary.test', { n: fmtDays(BUNDLE.meta.test_size) });
     const tp = high[0], fp = high[1], fn = low[0], tn = low[1];
     const edge = fmtPct(BUNDLE.meta.risk_group_edges[split - 1]);
     $('summary-title').textContent = t('summary.title');
@@ -936,7 +957,9 @@
     $('summary-stats').replaceChildren(
       stat(t('summary.sens'), tp, tp + fn, 'summary.sensNote'),
       stat(t('summary.spec'), tn, tn + fp, 'summary.specNote'));
-    $('summary-note').textContent = t('summary.note', { n: fmtDays(tp + fn + fp + tn), edge, folds: BUNDLE.meta.cv_folds });
+    $('summary-note').textContent = [t('summary.note', { n: fmtDays(tp + fn + fp + tn), edge }),
+      state.summaryTrain ? t('summary.noteTrain', { n: fmtDays(nTrain), folds: BUNDLE.meta.cv_folds }) : '',
+      state.summaryTest ? t('summary.noteTest', { n: fmtDays(nTest) }) : ''].filter(Boolean).join(' ');
   }
 
   function renderMiniSummary() {
@@ -1409,6 +1432,14 @@
       drawMap();
       save();
     });
+    // Хотя бы одна выборка в матрице 2 × 2 остаётся выбранной
+    for (const [id, key, other] of [['summary-train', 'summaryTrain', 'summaryTest'], ['summary-test', 'summaryTest', 'summaryTrain']]) {
+      $(id).addEventListener('change', (e) => {
+        state[key] = e.target.checked || !state[other];
+        renderSummary();
+        save();
+      });
+    }
     $('highlight-sudden').checked = state.highlightSudden;
     $('highlight-sudden').addEventListener('change', (e) => {
       state.highlightSudden = e.target.checked;
