@@ -287,6 +287,7 @@
     view.perplexity = null;
     view.kl = null;
     view.projOriginal.clear();
+    resetMapView();
     updateStatus();
     // Сначала даём браузеру показать статус: расчёт сходств для 1506 пациентов занимает заметное время
     requestAnimationFrame(() => setTimeout(() => {
@@ -373,7 +374,7 @@
   const canvas = $('map');
   const ctx = canvas.getContext('2d');
   const tooltip = $('map-tooltip');
-  const screen = { scale: 1, ox: 0, oy: 0, w: 0, h: 0 };
+  const screen = { scale: 1, ox: 0, oy: 0, w: 0, h: 0, cx: 0, cy: 0, zoom: 1, panX: 0, panY: 0 };
   let colors = {};
 
   function readColors() {
@@ -406,10 +407,47 @@
     const b = ds.tsne.bounds();
     const padData = 0.06, padPx = 16;
     const bw = (b.x1 - b.x0) * (1 + 2 * padData) || 1, bh = (b.y1 - b.y0) * (1 + 2 * padData) || 1;
-    screen.scale = Math.min((screen.w - 2 * padPx) / bw, (screen.h - 2 * padPx) / bh);
-    screen.ox = screen.w / 2 - ((b.x0 + b.x1) / 2) * screen.scale;
-    screen.oy = screen.h / 2 + ((b.y0 + b.y1) / 2) * screen.scale;
+    screen.baseScale = Math.min((screen.w - 2 * padPx) / bw, (screen.h - 2 * padPx) / bh);
+    screen.cx = (b.x0 + b.x1) / 2;
+    screen.cy = (b.y0 + b.y1) / 2;
+    applyMapTransform();
   }
+
+  function applyMapTransform() {
+    screen.scale = (screen.baseScale || 1) * screen.zoom;
+    screen.ox = screen.w / 2 + screen.panX - screen.cx * screen.scale;
+    screen.oy = screen.h / 2 + screen.panY + screen.cy * screen.scale;
+  }
+
+  function updateMapZoom() {
+    $('map-zoom').textContent = `${Math.round(screen.zoom * 100)}%`;
+    $('map-zoom-out').disabled = screen.zoom <= 1;
+    $('map-zoom-in').disabled = screen.zoom >= 16;
+    $('map-zoom-reset').disabled = screen.zoom === 1 && screen.panX === 0 && screen.panY === 0;
+  }
+
+  function resetMapView() {
+    screen.zoom = 1;
+    screen.panX = screen.panY = 0;
+    applyMapTransform();
+    updateMapZoom();
+  }
+
+  function zoomMap(next, px = screen.w / 2, py = screen.h / 2) {
+    if (!ds.tsne) return;
+    const zoom = clamp(next, 1, 16);
+    const dataX = (px - screen.ox) / screen.scale;
+    const dataY = (screen.oy - py) / screen.scale;
+    screen.zoom = zoom;
+    screen.scale = (screen.baseScale || 1) * zoom;
+    screen.panX = px - dataX * screen.scale - (screen.w / 2 - screen.cx * screen.scale);
+    screen.panY = py + dataY * screen.scale - (screen.h / 2 + screen.cy * screen.scale);
+    applyMapTransform();
+    updateMapZoom();
+    hideTooltip();
+    drawMap();
+  }
+
   const sx = (x) => screen.ox + x * screen.scale;
   const sy = (y) => screen.oy - y * screen.scale;
 
@@ -610,7 +648,28 @@
     tooltip.style.display = 'none';
   }
 
+  let mapDrag = null, suppressMapClick = false;
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    mapDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, panX: screen.panX, panY: screen.panY, moved: false };
+    canvas.setPointerCapture(e.pointerId);
+  });
   canvas.addEventListener('pointermove', (e) => {
+    if (mapDrag && mapDrag.id === e.pointerId) {
+      const dx = e.clientX - mapDrag.x, dy = e.clientY - mapDrag.y;
+      mapDrag.moved ||= Math.hypot(dx, dy) > 3;
+      if (mapDrag.moved) {
+        screen.panX = mapDrag.panX + dx;
+        screen.panY = mapDrag.panY + dy;
+        state.hovered = -1;
+        applyMapTransform();
+        updateMapZoom();
+        hideTooltip();
+        drawMap();
+        canvas.style.cursor = 'grabbing';
+      }
+      return;
+    }
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
     const g = nearest(px, py);
@@ -621,21 +680,60 @@
     canvas.style.cursor = g >= 0 ? 'pointer' : 'crosshair';
     if (g >= 0) showTooltip(g, px, py); else hideTooltip();
   });
+  canvas.addEventListener('pointerup', (e) => {
+    if (!mapDrag || mapDrag.id !== e.pointerId) return;
+    suppressMapClick = mapDrag.moved;
+    mapDrag = null;
+    canvas.style.cursor = 'crosshair';
+    if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointercancel', () => {
+    mapDrag = null;
+    suppressMapClick = false;
+    canvas.style.cursor = 'crosshair';
+  });
   canvas.addEventListener('pointerleave', () => {
+    if (mapDrag) return;
     state.hovered = -1;
     hideTooltip();
     drawMap();
   });
   canvas.addEventListener('click', (e) => {
+    if (suppressMapClick) { suppressMapClick = false; return; }
     const rect = canvas.getBoundingClientRect();
     const g = nearest(e.clientX - rect.left, e.clientY - rect.top);
     if (g >= 0) selectPatient(g);
   });
+  canvas.addEventListener('wheel', (e) => {
+    if (!ds.tsne) return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? screen.h : 1;
+    zoomMap(screen.zoom * Math.exp(-e.deltaY * unit * 0.002), e.clientX - rect.left, e.clientY - rect.top);
+  }, { passive: false });
+  $('map-zoom-in').addEventListener('click', () => zoomMap(screen.zoom * 1.5));
+  $('map-zoom-out').addEventListener('click', () => zoomMap(screen.zoom / 1.5));
+  $('map-zoom-reset').addEventListener('click', () => {
+    resetMapView();
+    hideTooltip();
+    drawMap();
+  });
   canvas.addEventListener('keydown', (e) => {
     const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
-    if (!step) return;
-    e.preventDefault();
-    stepPatient(step);
+    if (step) {
+      e.preventDefault();
+      stepPatient(step);
+    } else if (e.key === '+' || e.key === '=') {
+      e.preventDefault();
+      zoomMap(screen.zoom * 1.5);
+    } else if (e.key === '-' || e.key === '_') {
+      e.preventDefault();
+      zoomMap(screen.zoom / 1.5);
+    } else if (e.key === '0') {
+      e.preventDefault();
+      resetMapView();
+      drawMap();
+    }
   });
 
   function updateStatus() {
@@ -649,6 +747,40 @@
   // ---------------------------------------------------------------------------
   // Прогноз для выбранного пациента: карточка, функция выживаемости, таблица моделей
   // ---------------------------------------------------------------------------
+  // Локальный TreeSHAP XGBoost Cox: объясняется центрированный лог-риск до калибратора S(t).
+  let shapExplainer = null;
+  let shapShowAll = false;
+  function renderShap(g) {
+    shapExplainer ||= TreeSHAP.create(BUNDLE);
+    const { baseValue, values, score } = shapExplainer.explain(state.values[g]);
+    const ordered = FEATURES.map((feature, k) => ({ feature, k, value: values[k] }))
+      .sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
+    const shown = shapShowAll ? ordered : ordered.slice(0, 12);
+    const max = Math.max(1e-12, ...ordered.map(({ value }) => Math.abs(value)));
+    const signed = (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${I18N.fixed(Math.abs(v), 3)}`;
+
+    $('shap-sub').textContent = t('shap.sub', { id: PATIENTS.id[g] });
+    $('shap-base').textContent = I18N.fixed(baseValue, 3);
+    $('shap-score').textContent = I18N.fixed(score, 3);
+    $('shap-risk').textContent = fmtPct(curRisk.xgb[g]);
+    $('shap-formula').textContent = t('shap.formula', { base: I18N.fixed(baseValue, 3), score: I18N.fixed(score, 3) });
+    $('shap-chart').replaceChildren(...shown.map(({ feature, k, value }) => {
+      const text = I18N.feature(feature);
+      const raw = state.values[g][k];
+      const featureValue = text.levels ? text.levels[raw] ?? I18N.num(raw) : `${I18N.num(raw)}${text.unit ? ` ${text.unit}` : ''}`;
+      const width = `${50 * Math.abs(value) / max}%`;
+      return el('div', { class: 'shap-row' },
+        el('div', { class: 'shap-label', title: feature }, el('span', { text: text.label }), el('small', { text: `${feature} = ${featureValue}` })),
+        el('div', { class: 'shap-track' }, el('span', { class: 'shap-zero' }),
+          el('span', { class: `shap-bar ${value >= 0 ? 'positive' : 'negative'}`, style: value >= 0 ? `left:50%;width:${width}` : `right:50%;width:${width}` })),
+        el('span', { class: 'shap-value', text: signed(value) }));
+    }));
+    const toggle = $('shap-toggle');
+    toggle.textContent = t(shapShowAll ? 'shap.less' : 'shap.more', { n: D - shown.length });
+    toggle.onclick = () => { shapShowAll = !shapShowAll; renderShap(state.selected); };
+    $('shap-note').textContent = t('shap.note', { n: shapExplainer.backgroundSize, shown: shown.length, total: D });
+  }
+
   function renderPrediction() {
     const g = state.selected, m = state.model;
     const edited = editedSet.has(g);
@@ -718,6 +850,7 @@
     renderSurvivalChart(g, base.curve, edited ? cur.curve : null);
     renderModelTable();
     renderMiniSummary();
+    renderShap(g);
   }
 
   const STAGED_GROUPS = ['early', 'late', 'survive'];
